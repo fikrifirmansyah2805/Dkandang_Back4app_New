@@ -1,3 +1,4 @@
+// server.ts
 import express from 'express';
 import fs from 'fs';
 import path from 'path';
@@ -12,6 +13,7 @@ const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT) || 8080;
 const WEBHOOK_QUEUE_FILE = path.join(__dirname, '.sheets-webhook-queue.json');
+const UNIVERSAL_DB_FILE = path.join(__dirname, '.erp-universal-db.json');
 
 export interface WebhookStagingRow {
   id: string;
@@ -22,6 +24,26 @@ export interface WebhookStagingRow {
   rawRow: Record<string, any>;
 }
 
+// ---------------- UNIVERSAL SERVER DB STORAGE ----------------
+function readServerDB(): Record<string, Record<string, any>> {
+  try {
+    if (fs.existsSync(UNIVERSAL_DB_FILE)) {
+      return JSON.parse(fs.readFileSync(UNIVERSAL_DB_FILE, 'utf-8')) || {};
+    }
+  } catch (err) {
+    console.warn('[ServerDB] Failed reading DB file:', err);
+  }
+  return {};
+}
+
+function writeServerDB(dbData: Record<string, Record<string, any>>): void {
+  try {
+    fs.writeFileSync(UNIVERSAL_DB_FILE, JSON.stringify(dbData), 'utf-8');
+  } catch (err) {
+    console.warn('[ServerDB] Failed writing DB file:', err);
+  }
+}
+
 function readWebhookQueue(): WebhookStagingRow[] {
   try {
     if (fs.existsSync(WEBHOOK_QUEUE_FILE)) {
@@ -29,18 +51,14 @@ function readWebhookQueue(): WebhookStagingRow[] {
       const parsed = JSON.parse(content);
       return Array.isArray(parsed) ? parsed : [];
     }
-  } catch (err) {
-    console.warn('[WebhookQueue] Failed to read queue file:', err);
-  }
+  } catch (err) {}
   return [];
 }
 
 function writeWebhookQueue(queue: WebhookStagingRow[]): void {
   try {
     fs.writeFileSync(WEBHOOK_QUEUE_FILE, JSON.stringify(queue.slice(0, 2000), null, 2), 'utf-8');
-  } catch (err) {
-    console.warn('[WebhookQueue] Failed to persist queue file:', err);
-  }
+  } catch (err) {}
 }
 
 function getGenAIClient(): GoogleGenAI {
@@ -48,14 +66,7 @@ function getGenAIClient(): GoogleGenAI {
   if (!apiKey) {
     throw new Error('GEMINI_API_KEY belum dikonfigurasi pada environment server.');
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build'
-      }
-    }
-  });
+  return new GoogleGenAI({ apiKey });
 }
 
 async function startServer() {
@@ -72,48 +83,58 @@ async function startServer() {
     });
   });
 
-  // 2. AI-Assisted Smart Column Mapper Endpoint (Gemini API)
+  // 2. Built-in Universal REST Database Endpoints
+  app.get('/api/db/:collection', (req, res) => {
+    const col = req.params.collection;
+    const dbData = readServerDB();
+    const colMap = dbData[col] || {};
+    res.json({ success: true, items: Object.values(colMap) });
+  });
+
+  app.post('/api/db/:collection/batch', (req, res) => {
+    const col = req.params.collection;
+    const items = Array.isArray(req.body?.items) ? req.body.items : [];
+    const dbData = readServerDB();
+    if (!dbData[col]) dbData[col] = {};
+    for (const item of items) {
+      const id = item?.id || item?.code || `doc_${Date.now()}`;
+      dbData[col][id] = { ...item, id };
+    }
+    writeServerDB(dbData);
+    res.json({ success: true, count: items.length });
+  });
+
+  app.post('/api/db/:collection/delete-batch', (req, res) => {
+    const col = req.params.collection;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids : [];
+    const dbData = readServerDB();
+    if (dbData[col]) {
+      for (const id of ids) {
+        delete dbData[col][id];
+      }
+      writeServerDB(dbData);
+    }
+    res.json({ success: true, deletedCount: ids.length });
+  });
+
+  // 3. AI-Assisted Smart Column Mapper Endpoint (Gemini API)
   app.post('/api/ai/map-columns', async (req, res) => {
     try {
       const { headers, sampleRows } = req.body || {};
       if (!Array.isArray(headers) || headers.length === 0) {
-        res.status(400).json({ error: 'Parameter headers (array nama kolom) wajib dikirim.' });
+        res.status(400).json({ error: 'Parameter headers wajib dikirim.' });
         return;
       }
 
       const ai = getGenAIClient();
       const samplePreview = Array.isArray(sampleRows) ? sampleRows.slice(0, 3) : [];
 
-      const prompt = `Anda adalah asisten akuntansi sistem ERP D'Kandang Amazing Farm.
-Tugas Anda adalah memetakan daftar nama kolom (header) dari file Excel / Google Sheets pengguna ke dalam field skema standar cash_transactions.
-
-Daftar nama kolom dari file pengguna:
-${JSON.stringify(headers)}
-
-Contoh isi baris data (maksimal 3 baris pertama):
-${JSON.stringify(samplePreview, null, 2)}
-
-Aturan pemetaan:
-- Pilih PERSIS salah satu nama kolom dari daftar header pengguna untuk setiap field yang cocok.
-- Jika tidak ada kolom yang cocok untuk suatu field, isi dengan string kosong "".
-- dateCol: kolom tanggal transaksi / tanggal faktur (misal: Tanggal, Tgl, Date).
-- receivedDateCol: kolom tanggal uang diterima / masuk rekening (jika ada kolom terpisah).
-- typeCol: kolom jenis arus kas masuk/keluar/debit/kredit (misal: Tipe, Jenis, Masuk/Keluar, In/Out, Type).
-- descriptionCol: kolom uraian / deskripsi / keterangan / keperluan / nama item transaksi.
-- amountCol: kolom nominal rupiah / jumlah uang / total harga (misal: Nominal, Jumlah (Rp), Total, Amount).
-- qtyCol: kolom kuantitas / jumlah barang (misal: Qty, Kuantitas, Volume).
-- unitCol: kolom satuan barang (misal: Satuan, Unit).
-- unitPriceCol: kolom harga satuan (misal: Harga Satuan, Unit Price).
-- sourceAccountCol: kolom nama rekening bank atau kas sumber/tujuan (misal: Rekening, Bank, Sumber Dana, Account).
-- budgetCol: kolom pos anggaran / departemen / divisi.
-- schoolOrEntityCol: kolom nama sekolah / klien / instansi / vendor / pelanggan.
-- paymentStageCol: kolom tahap pembayaran (misal: DP, Termin, Pelunasan, Status Bayar).
-- incomeSourceCol: kolom kategori sumber pendapatan (misal: Kunjungan Sekolah, Tiket, Susu, Resto).
-- referenceCol: kolom nomor referensi / nomor bukti / no kwitansi / no invoice.
-- categoryCol: kolom kategori arus kas (Operating, Investing, Financing).`;
+      const prompt = `Petakan daftar nama kolom dari file Excel/Sheets pengguna ke skema cash_transactions.
+Header: ${JSON.stringify(headers)}
+Sampel: ${JSON.stringify(samplePreview)}`;
 
       const response = await ai.models.generateContent({
-        model: 'gemini-3.8-flash',
+        model: 'gemini-2.5-flash',
         contents: prompt,
         config: {
           thinkingConfig: { thinkingLevel: ThinkingLevel.LOW },
@@ -136,52 +157,25 @@ Aturan pemetaan:
               incomeSourceCol: { type: Type.STRING },
               referenceCol: { type: Type.STRING },
               categoryCol: { type: Type.STRING }
-            },
-            required: [
-              'dateCol',
-              'receivedDateCol',
-              'typeCol',
-              'descriptionCol',
-              'amountCol',
-              'qtyCol',
-              'unitCol',
-              'unitPriceCol',
-              'sourceAccountCol',
-              'budgetCol',
-              'schoolOrEntityCol',
-              'paymentStageCol',
-              'incomeSourceCol',
-              'referenceCol',
-              'categoryCol'
-            ]
+            }
           }
         }
       });
 
-      const rawText = (response.text ?? '{}').trim();
-      const parsedMapping = JSON.parse(rawText);
-
-      // Sanitize: ensure mapped values actually exist in headers
+      const parsedMapping = JSON.parse((response.text ?? '{}').trim());
       const headerSet = new Set(headers);
       const sanitizedMapping: Record<string, string> = {};
       for (const [key, val] of Object.entries(parsedMapping)) {
         sanitizedMapping[key] = typeof val === 'string' && headerSet.has(val) ? val : '';
       }
 
-      res.json({
-        success: true,
-        mapping: sanitizedMapping
-      });
+      res.json({ success: true, mapping: sanitizedMapping });
     } catch (error: any) {
-      console.error('[/api/ai/map-columns] Error:', error);
-      res.status(500).json({
-        success: false,
-        error: error?.message || 'Gagal menjalankan pemetaan kolom dengan Gemini AI.'
-      });
+      res.status(500).json({ success: false, error: error?.message || 'Gagal memetakan kolom.' });
     }
   });
 
-  // 3. Server-Side Proxy for Google Sheets Public CSV Export (Avoids Browser CORS)
+  // 4. Server-Side Proxy for Google Sheets Public CSV Export
   app.get('/api/sheets/fetch-csv', async (req, res) => {
     try {
       const spreadsheetId = String(req.query.spreadsheetId || '').trim();
@@ -206,101 +200,61 @@ Aturan pemetaan:
       } else {
         const exportRes = await fetch(exportUrl);
         if (!exportRes.ok) {
-          res.status(400).json({
-            error: 'Gagal mengunduh CSV dari Google Sheets. Pastikan akses berbagi diset ke "Siapa saja yang memiliki link dapat melihat".'
-          });
+          res.status(400).json({ error: 'Gagal mengunduh CSV dari Google Sheets.' });
           return;
         }
         csvText = await exportRes.text();
       }
 
-      if (csvText.trim().startsWith('<!DOCTYPE html') || csvText.trim().startsWith('<html')) {
-        res.status(403).json({
-          error: 'Spreadsheet masih terkunci (Privat). Ubah akses berbagi Google Sheets menjadi "Siapa saja yang memiliki link" atau gunakan OAuth.'
-        });
-        return;
-      }
-
-      res.json({
-        success: true,
-        csvText
-      });
+      res.json({ success: true, csvText });
     } catch (error: any) {
-      console.error('[/api/sheets/fetch-csv] Error:', error);
-      res.status(500).json({
-        success: false,
-        error: error?.message || 'Gagal menarik data CSV dari Google Sheets.'
-      });
+      res.status(500).json({ success: false, error: error?.message });
     }
   });
 
-  // 4. Google Apps Script Webhook Endpoint (POST /api/webhooks/sheets-sync)
+  // 5. Google Apps Script Webhook Endpoints
   app.post('/api/webhooks/sheets-sync', (req, res) => {
-    try {
-      const body = req.body || {};
-      const spreadsheetId = String(body.spreadsheetId || 'gsheet_webhook').trim();
-      const spreadsheetName = String(body.spreadsheetName || 'Google Sheets Webhook').trim();
-      const sheetName = String(body.sheetName || 'Sheet1').trim();
+    const body = req.body || {};
+    const spreadsheetId = String(body.spreadsheetId || 'gsheet_webhook').trim();
+    const spreadsheetName = String(body.spreadsheetName || 'Google Sheets Webhook').trim();
+    const sheetName = String(body.sheetName || 'Sheet1').trim();
 
-      let incomingRows: Record<string, any>[] = [];
-      if (Array.isArray(body.rows)) {
-        incomingRows = body.rows.filter((r: any) => r && typeof r === 'object');
-      } else if (body.row && typeof body.row === 'object') {
-        incomingRows = [body.row];
-      } else if (body.date || body.description || body.amount || body.Tanggal || body.Uraian || body.Nominal) {
-        incomingRows = [body];
-      }
-
-      if (incomingRows.length === 0) {
-        res.status(400).json({
-          success: false,
-          error: 'Payload webhook tidak memiliki data baris (rows / row) yang valid.'
-        });
-        return;
-      }
-
-      const nowIso = new Date().toISOString();
-      const currentQueue = readWebhookQueue();
-
-      const newItems: WebhookStagingRow[] = incomingRows.map((rawRow, idx) => ({
-        id: `wh_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
-        receivedAt: nowIso,
-        spreadsheetId,
-        spreadsheetName,
-        sheetName,
-        rawRow
-      }));
-
-      const updatedQueue = [...newItems, ...currentQueue].slice(0, 2000);
-      writeWebhookQueue(updatedQueue);
-
-      res.json({
-        success: true,
-        queuedCount: newItems.length,
-        totalQueueSize: updatedQueue.length,
-        timestamp: nowIso,
-        message: `${newItems.length} baris transaksi berhasil diterima oleh Webhook ERP D'Kandang dan siap divalidasi/disinkronkan.`
-      });
-    } catch (error: any) {
-      console.error('[/api/webhooks/sheets-sync] Error:', error);
-      res.status(500).json({
-        success: false,
-        error: error?.message || 'Internal server error saat memproses webhook Google Sheets.'
-      });
+    let incomingRows: Record<string, any>[] = [];
+    if (Array.isArray(body.rows)) {
+      incomingRows = body.rows.filter((r: any) => r && typeof r === 'object');
+    } else if (body.row && typeof body.row === 'object') {
+      incomingRows = [body.row];
+    } else {
+      incomingRows = [body];
     }
-  });
 
-  // 5. Get Pending Google Apps Script Webhook Queue
-  app.get('/api/webhooks/sheets-sync/queue', (_req, res) => {
-    const queue = readWebhookQueue();
+    const nowIso = new Date().toISOString();
+    const currentQueue = readWebhookQueue();
+    const newItems: WebhookStagingRow[] = incomingRows.map((rawRow, idx) => ({
+      id: `wh_${Date.now()}_${idx}_${Math.random().toString(36).substring(2, 6)}`,
+      receivedAt: nowIso,
+      spreadsheetId,
+      spreadsheetName,
+      sheetName,
+      rawRow
+    }));
+
+    const updatedQueue = [...newItems, ...currentQueue].slice(0, 2000);
+    writeWebhookQueue(updatedQueue);
+
     res.json({
       success: true,
-      count: queue.length,
-      queue
+      queuedCount: newItems.length,
+      totalQueueSize: updatedQueue.length,
+      timestamp: nowIso
     });
   });
 
-  // 6. Acknowledge / Clear Processed Webhook Queue Items
+  app.get('/api/webhooks/sheets-sync/queue', (_req, res) => {
+    const queue = readWebhookQueue();
+    res.json({ success: true, count: queue.length, queue });
+  });
+
   app.post('/api/webhooks/sheets-sync/ack', (req, res) => {
     const { ids, clearAll } = req.body || {};
     if (clearAll) {
@@ -308,23 +262,15 @@ Aturan pemetaan:
       res.json({ success: true, remainingCount: 0 });
       return;
     }
-
     const idSet = new Set(Array.isArray(ids) ? ids : []);
-    const current = readWebhookQueue();
-    const remaining = current.filter(item => !idSet.has(item.id));
+    const remaining = readWebhookQueue().filter((item) => !idSet.has(item.id));
     writeWebhookQueue(remaining);
-
-    res.json({
-      success: true,
-      remainingCount: remaining.length
-    });
+    res.json({ success: true, remainingCount: remaining.length });
   });
 
-  // Mount Vite Dev Server or Static Production Assets
+  // 6. Serve Static Production Build (Prioritas Utama Agar Hemat RAM di Cloud Container)
   const distPath = path.join(__dirname, 'dist');
-  const isProd = process.env.NODE_ENV === 'production' && fs.existsSync(distPath);
-
-  if (isProd) {
+  if (fs.existsSync(distPath)) {
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
@@ -339,11 +285,11 @@ Aturan pemetaan:
   }
 
   app.listen(PORT, '0.0.0.0', () => {
-    console.log(`[D'Kandang ERP Server] Running on http://0.0.0.0:${PORT}`);
+    console.log(`[D'Kandang ERP Server] Listening on http://0.0.0.0:${PORT}`);
   });
 }
 
-startServer().catch(err => {
+startServer().catch((err) => {
   console.error('Failed to start server:', err);
   process.exit(1);
 });
