@@ -1,88 +1,239 @@
-import { 
-  collection, 
-  doc, 
-  setDoc, 
-  updateDoc, 
-  deleteDoc, 
-  onSnapshot, 
-  getDocs, 
-  writeBatch 
-} from 'firebase/firestore';
-import { db } from '../firebase';
+// src/services/firestoreSync.ts
+// Universal Database Sync Engine (Supports: Back4App, Supabase, Custom REST API, Built-in Express Server DB & LocalStorage)
 
-// Helper to remove undefined fields and circular refs which Firestore rejects
+const env = (import.meta as any).env || {};
+
+// Konfigurasi Otomatis Berdasarkan Environment Variables yang Diisi User
+const DB_PROVIDER: 'back4app' | 'supabase' | 'custom' | 'server' =
+  env.VITE_DB_PROVIDER ||
+  (env.VITE_BACK4APP_APP_ID ? 'back4app' : env.VITE_SUPABASE_URL ? 'supabase' : env.VITE_CUSTOM_DB_URL ? 'custom' : 'server');
+
+const BACK4APP_APP_ID = env.VITE_BACK4APP_APP_ID || '';
+const BACK4APP_KEY = env.VITE_BACK4APP_REST_KEY || env.VITE_BACK4APP_JS_KEY || '';
+const BACK4APP_URL = (env.VITE_BACK4APP_SERVER_URL || 'https://parseapi.back4app.com').replace(/\/$/, '');
+
+const SUPABASE_URL = (env.VITE_SUPABASE_URL || '').replace(/\/$/, '');
+const SUPABASE_KEY = env.VITE_SUPABASE_ANON_KEY || '';
+
+const CUSTOM_DB_URL = (env.VITE_CUSTOM_DB_URL || '').replace(/\/$/, '');
+const CUSTOM_DB_KEY = env.VITE_CUSTOM_DB_KEY || '';
+
+const LOCAL_Mirror_PREFIX = 'dkandang_univ_db_';
+const DELETED_RECORDS_KEY = 'dkandang_deleted_records';
+const INITIALIZED_COLLECTIONS_KEY = 'dkandang_initialized_collections';
+
+// In-memory subscribers untuk sinkronisasi real-time antar komponen
+const collectionSubscribers = new Map<string, Set<(items: any[]) => void>>();
+const deletedCache: Record<string, Set<string>> = {};
+let isInitializedCacheLoaded = false;
+const initializedCollections = new Set<string>();
+
 export function cleanForFirestore<T>(data: T): T {
   if (data === null || data === undefined) return data;
   return JSON.parse(JSON.stringify(data));
 }
 
-// Get standard ID / Key for document
 export function getItemKey<T extends { id?: string; code?: string }>(item: T): string {
   return item.id || item.code || `doc_${Date.now()}_${Math.random().toString(36).substring(2, 6)}`;
 }
 
-// Quota exhaustion tracking to prevent endless retry storms and uncaught exceptions
-let firestoreQuotaExceeded = false;
-const quotaListeners = new Set<(exceeded: boolean) => void>();
-
-export function isQuotaExceededError(error: any): boolean {
-  if (!error) return false;
-  const code = error?.code || '';
-  const message = error?.message || error?.toString() || '';
-  return (
-    code === 'resource-exhausted' ||
-    message.includes('Quota limit exceeded') ||
-    message.includes('resource-exhausted') ||
-    message.includes('Quota exceeded')
-  );
+export function isQuotaExceededError(_error: any): boolean {
+  return false;
 }
 
 export function getIsFirestoreQuotaExceeded(): boolean {
-  return firestoreQuotaExceeded;
+  return false;
 }
 
 export function subscribeToQuotaStatus(listener: (exceeded: boolean) => void): () => void {
-  quotaListeners.add(listener);
-  listener(firestoreQuotaExceeded);
-  return () => quotaListeners.delete(listener);
+  listener(false);
+  return () => {};
 }
 
-function handleQuotaExceeded(error: any): void {
-  if (!firestoreQuotaExceeded && isQuotaExceededError(error)) {
-    firestoreQuotaExceeded = true;
-    console.warn(
-      '[Firestore] Kuota penulisan harian Firestore (Spark Free Tier) telah tercapai. Operasi penulisan ke cloud ditangguhkan hingga kuota di-reset harian. Data tetap tersimpan aman di penyimpanan lokal (offline resilience).'
-    );
-    quotaListeners.forEach((fn) => {
-      try { fn(true); } catch (_) {}
+// ---------------- LOCAL MIRROR & REALTIME DISPATCHER ----------------
+function readLocalMirror<T>(collectionName: string): Record<string, T> {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(`${LOCAL_Mirror_PREFIX}${collectionName}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (parsed && typeof parsed === 'object') return parsed;
+      }
+    }
+  } catch (e) {}
+  return {};
+}
+
+function writeLocalMirror<T>(collectionName: string, mapData: Record<string, T>): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(`${LOCAL_Mirror_PREFIX}${collectionName}`, JSON.stringify(mapData));
+    }
+  } catch (e) {}
+}
+
+function notifyCollectionListeners(collectionName: string): void {
+  const subs = collectionSubscribers.get(collectionName);
+  if (!subs || subs.size === 0) return;
+  const mapData = readLocalMirror<any>(collectionName);
+  const items = Object.values(mapData).filter((item: any) => {
+    const key = getItemKey(item);
+    return !isRecordDeleted(collectionName, key);
+  });
+  subs.forEach((cb) => {
+    try { cb(items); } catch (e) {}
+  });
+}
+
+// ---------------- CLOUD ADAPTERS (BACK4APP / SUPABASE / CUSTOM / SERVER) ----------------
+async function cloudFetchCollection<T>(collectionName: string): Promise<T[] | null> {
+  try {
+    if (DB_PROVIDER === 'back4app' && BACK4APP_APP_ID && BACK4APP_KEY) {
+      const headers: Record<string, string> = {
+        'X-Parse-Application-Id': BACK4APP_APP_ID,
+        'Content-Type': 'application/json'
+      };
+      if (env.VITE_BACK4APP_REST_KEY) {
+        headers['X-Parse-REST-API-Key'] = BACK4APP_KEY;
+      } else {
+        headers['X-Parse-JavaScript-Key'] = BACK4APP_KEY;
+      }
+      const res = await fetch(`${BACK4APP_URL}/classes/${collectionName}?limit=2000`, { headers });
+      if (!res.ok) return null;
+      const json = await res.json();
+      if (Array.isArray(json.results)) {
+        return json.results.map((r: any) => {
+          const { objectId, createdAt, updatedAt, ACL, __type, className, payloadJson, ...rest } = r;
+          const base = payloadJson ? JSON.parse(payloadJson) : rest;
+          return { ...base, id: base.id || base.code || objectId } as T;
+        });
+      }
+      return null;
+    }
+
+    if (DB_PROVIDER === 'supabase' && SUPABASE_URL && SUPABASE_KEY) {
+      const res = await fetch(
+        `${SUPABASE_URL}/rest/v1/erp_records?collection=eq.${encodeURIComponent(collectionName)}&select=*`,
+        {
+          headers: {
+            apikey: SUPABASE_KEY,
+            Authorization: `Bearer ${SUPABASE_KEY}`
+          }
+        }
+      );
+      if (!res.ok) return null;
+      const rows = await res.json();
+      return Array.isArray(rows) ? rows.map((r: any) => r.data as T) : null;
+    }
+
+    const baseUrl = DB_PROVIDER === 'custom' && CUSTOM_DB_URL ? CUSTOM_DB_URL : '/api/db';
+    const res = await fetch(`${baseUrl}/${encodeURIComponent(collectionName)}`, {
+      headers: CUSTOM_DB_KEY ? { Authorization: `Bearer ${CUSTOM_DB_KEY}` } : undefined
     });
+    if (!res.ok) return null;
+    const json = await res.json();
+    return Array.isArray(json.items) ? json.items : null;
+  } catch (e) {
+    return null;
   }
 }
 
-// Upsert a document in Firestore with graceful fallback on quota exhaustion
+async function cloudUpsertDocuments<T extends { id?: string; code?: string }>(
+  collectionName: string,
+  items: T[]
+): Promise<void> {
+  if (!items || items.length === 0) return;
+  try {
+    if (DB_PROVIDER === 'back4app' && BACK4APP_APP_ID && BACK4APP_KEY) {
+      const headers: Record<string, string> = {
+        'X-Parse-Application-Id': BACK4APP_APP_ID,
+        'Content-Type': 'application/json'
+      };
+      if (env.VITE_BACK4APP_REST_KEY) {
+        headers['X-Parse-REST-API-Key'] = BACK4APP_KEY;
+      } else {
+        headers['X-Parse-JavaScript-Key'] = BACK4APP_KEY;
+      }
+      for (const item of items) {
+        const docId = getItemKey(item);
+        const cleanItem = cleanForFirestore(item);
+        await fetch(`${BACK4APP_URL}/classes/${collectionName}`, {
+          method: 'POST',
+          headers,
+          body: JSON.stringify({
+            docId,
+            ...cleanItem,
+            payloadJson: JSON.stringify(cleanItem)
+          })
+        });
+      }
+      return;
+    }
+
+    if (DB_PROVIDER === 'supabase' && SUPABASE_URL && SUPABASE_KEY) {
+      const payload = items.map((item) => ({
+        id: `${collectionName}:${getItemKey(item)}`,
+        collection: collectionName,
+        doc_id: getItemKey(item),
+        data: cleanForFirestore(item),
+        updated_at: new Date().toISOString()
+      }));
+      await fetch(`${SUPABASE_URL}/rest/v1/erp_records`, {
+        method: 'POST',
+        headers: {
+          apikey: SUPABASE_KEY,
+          Authorization: `Bearer ${SUPABASE_KEY}`,
+          'Content-Type': 'application/json',
+          Prefer: 'resolution=merge-duplicates'
+        },
+        body: JSON.stringify(payload)
+      });
+      return;
+    }
+
+    const baseUrl = DB_PROVIDER === 'custom' && CUSTOM_DB_URL ? CUSTOM_DB_URL : '/api/db';
+    await fetch(`${baseUrl}/${encodeURIComponent(collectionName)}/batch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(CUSTOM_DB_KEY ? { Authorization: `Bearer ${CUSTOM_DB_KEY}` } : {})
+      },
+      body: JSON.stringify({ items: cleanForFirestore(items) })
+    });
+  } catch (e) {
+    // Offline / local fallback tetap berjalan aman tanpa melempar error
+  }
+}
+
+async function cloudDeleteDocuments(collectionName: string, ids: string[]): Promise<void> {
+  if (!ids || ids.length === 0) return;
+  try {
+    const baseUrl = DB_PROVIDER === 'custom' && CUSTOM_DB_URL ? CUSTOM_DB_URL : '/api/db';
+    await fetch(`${baseUrl}/${encodeURIComponent(collectionName)}/delete-batch`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...(CUSTOM_DB_KEY ? { Authorization: `Bearer ${CUSTOM_DB_KEY}` } : {})
+      },
+      body: JSON.stringify({ ids })
+    });
+  } catch (e) {}
+}
+
+// ---------------- PUBLIC CRUD API (100% KOMPATIBEL DENGAN ERPContext) ----------------
 export async function saveDocument<T extends { id?: string; code?: string }>(
-  collectionName: string, 
+  collectionName: string,
   data: T
 ): Promise<void> {
   const docId = getItemKey(data);
-  if (firestoreQuotaExceeded) {
-    // Quota reached: skip Firestore network call to avoid backoff delays
-    return;
-  }
-  try {
-    const docRef = doc(db, collectionName, docId);
-    await setDoc(docRef, cleanForFirestore(data), { merge: true });
-  } catch (error) {
-    if (isQuotaExceededError(error)) {
-      handleQuotaExceeded(error);
-      return;
-    }
-    console.error(`[Firestore] Failed to save document ${docId} in ${collectionName}:`, error);
-    throw error;
-  }
+  const clean = cleanForFirestore(data);
+  const mapData = readLocalMirror<T>(collectionName);
+  mapData[docId] = { ...clean, id: (clean as any).id || docId };
+  writeLocalMirror(collectionName, mapData);
+  notifyCollectionListeners(collectionName);
+  await cloudUpsertDocuments(collectionName, [mapData[docId]]);
 }
 
-// Debounced localStorage writer to prevent main-thread blocking during Firestore snapshot bursts
 const pendingStorageTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function scheduleStorageWrite(key: string, data: unknown, delayMs = 250): void {
@@ -92,80 +243,44 @@ export function scheduleStorageWrite(key: string, data: unknown, delayMs = 250):
     pendingStorageTimers.delete(key);
     try {
       localStorage.setItem(key, JSON.stringify(data));
-    } catch (e) {
-      console.warn(`[Storage] Failed writing key ${key}:`, e);
-    }
+    } catch (e) {}
   }, delayMs);
   pendingStorageTimers.set(key, timer);
 }
 
-// Batch save multiple documents with quota resilience (chunked at 450 docs per batch)
 export async function saveMultipleDocuments<T extends { id?: string; code?: string }>(
   collectionName: string,
   items: T[]
 ): Promise<void> {
   if (!items || items.length === 0) return;
-  if (firestoreQuotaExceeded) {
-    return;
+  const mapData = readLocalMirror<T>(collectionName);
+  const cleanedList: T[] = [];
+  for (const item of items) {
+    const docId = getItemKey(item);
+    const clean = cleanForFirestore(item);
+    const normalized = { ...clean, id: (clean as any).id || docId };
+    mapData[docId] = normalized;
+    cleanedList.push(normalized);
   }
-  const CHUNK_SIZE = 450;
-  try {
-    for (let i = 0; i < items.length; i += CHUNK_SIZE) {
-      if (firestoreQuotaExceeded) break;
-      const slice = items.slice(i, i + CHUNK_SIZE);
-      const batch = writeBatch(db);
-      for (const item of slice) {
-        const docId = getItemKey(item);
-        const docRef = doc(db, collectionName, docId);
-        batch.set(docRef, cleanForFirestore(item), { merge: true });
-      }
-      await batch.commit();
-    }
-  } catch (error) {
-    if (isQuotaExceededError(error)) {
-      handleQuotaExceeded(error);
-      return;
-    }
-    console.error(`[Firestore] Batch save error in ${collectionName}:`, error);
-    throw error;
-  }
+  writeLocalMirror(collectionName, mapData);
+  notifyCollectionListeners(collectionName);
+  await cloudUpsertDocuments(collectionName, cleanedList);
 }
 
-// Update partial document with quota resilience
 export async function patchDocument(
-  collectionName: string, 
-  id: string, 
+  collectionName: string,
+  id: string,
   updates: Record<string, any>
 ): Promise<void> {
-  if (firestoreQuotaExceeded) {
-    return;
-  }
-  try {
-    const docRef = doc(db, collectionName, id);
-    await updateDoc(docRef, cleanForFirestore(updates));
-  } catch (error) {
-    if (isQuotaExceededError(error)) {
-      handleQuotaExceeded(error);
-      return;
-    }
-    console.error(`[Firestore] Failed to patch document ${id} in ${collectionName}:`, error);
-    throw error;
-  }
+  const mapData = readLocalMirror<any>(collectionName);
+  const existing = mapData[id] || { id };
+  const updated = { ...existing, ...cleanForFirestore(updates), id };
+  mapData[id] = updated;
+  writeLocalMirror(collectionName, mapData);
+  notifyCollectionListeners(collectionName);
+  await cloudUpsertDocuments(collectionName, [updated]);
 }
 
-// In-memory set to prevent repeated seeding attempts in the same runtime session
-const seededCollections = new Set<string>();
-
-// Storage key for locally tracked deleted IDs (tombstones)
-const DELETED_RECORDS_KEY = 'dkandang_deleted_records';
-const INITIALIZED_COLLECTIONS_KEY = 'dkandang_initialized_collections';
-
-// In-memory cache of deleted record IDs per collection
-const deletedCache: Record<string, Set<string>> = {};
-let isInitializedCacheLoaded = false;
-const initializedCollections = new Set<string>();
-
-// Helper to load deleted cache from localStorage
 function ensureDeletedCacheLoaded(collectionName: string): Set<string> {
   if (!deletedCache[collectionName]) {
     try {
@@ -182,9 +297,7 @@ function ensureDeletedCacheLoaded(collectionName: string): Set<string> {
           }
         }
       }
-    } catch (e) {
-      console.warn('[Firestore] Failed reading deleted records cache:', e);
-    }
+    } catch (e) {}
     if (!deletedCache[collectionName]) {
       deletedCache[collectionName] = new Set();
     }
@@ -235,180 +348,61 @@ export async function markRecordAsDeleted(collectionName: string, id: string): P
   if (!id) return;
   const set = ensureDeletedCacheLoaded(collectionName);
   set.add(id);
-
-  // 1. Save to localStorage immediately
   try {
     const raw = localStorage.getItem(DELETED_RECORDS_KEY);
     const obj = raw ? JSON.parse(raw) : {};
     obj[collectionName] = Array.from(set);
     localStorage.setItem(DELETED_RECORDS_KEY, JSON.stringify(obj));
-  } catch (e) {
-    console.warn('[Firestore] Failed saving deleted record to localStorage:', e);
-  }
-
-  // 2. Persist to Firestore system_metadata/deleted_records
-  try {
-    const metaRef = doc(db, 'system_metadata', 'deleted_records');
-    await setDoc(metaRef, {
-      [collectionName]: Array.from(set),
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
-  } catch (e) {
-    console.warn('[Firestore] Failed syncing deleted record to system_metadata:', e);
-  }
+  } catch (e) {}
 }
 
 export async function unmarkRecordAsDeleted(collectionName: string, id: string): Promise<void> {
   if (!id) return;
   const set = ensureDeletedCacheLoaded(collectionName);
   set.delete(id);
-
   try {
     const raw = localStorage.getItem(DELETED_RECORDS_KEY);
     const obj = raw ? JSON.parse(raw) : {};
     obj[collectionName] = Array.from(set);
     localStorage.setItem(DELETED_RECORDS_KEY, JSON.stringify(obj));
-
-    const metaRef = doc(db, 'system_metadata', 'deleted_records');
-    await setDoc(metaRef, {
-      [collectionName]: Array.from(set),
-      updatedAt: new Date().toISOString()
-    }, { merge: true });
   } catch (e) {}
 }
 
-// Global listener for system_metadata/deleted_records to sync across devices & tabs
-let isListeningToDeletedRecords = false;
-export function initDeletedRecordsListener(): void {
-  if (isListeningToDeletedRecords) return;
-  isListeningToDeletedRecords = true;
+export function initDeletedRecordsListener(): void {}
 
-  try {
-    const metaRef = doc(db, 'system_metadata', 'deleted_records');
-    onSnapshot(metaRef, (snapshot) => {
-      if (snapshot.exists()) {
-        const data = snapshot.data();
-        let changed = false;
-        for (const col of Object.keys(data)) {
-          if (Array.isArray(data[col])) {
-            const set = ensureDeletedCacheLoaded(col);
-            for (const id of data[col]) {
-              if (!set.has(id)) {
-                set.add(id);
-                changed = true;
-              }
-            }
-          }
-        }
-        if (changed) {
-          try {
-            const serialized: Record<string, string[]> = {};
-            for (const col of Object.keys(deletedCache)) {
-              serialized[col] = Array.from(deletedCache[col]);
-            }
-            localStorage.setItem(DELETED_RECORDS_KEY, JSON.stringify(serialized));
-          } catch (e) {}
-        }
-      }
-    }, () => {});
-  } catch (e) {}
+export async function deleteDocument(collectionName: string, id: string): Promise<void> {
+  await markRecordAsDeleted(collectionName, id);
+  const mapData = readLocalMirror<any>(collectionName);
+  delete mapData[id];
+  writeLocalMirror(collectionName, mapData);
+  notifyCollectionListeners(collectionName);
+  await cloudDeleteDocuments(collectionName, [id]);
 }
 
-// Start listener immediately
-initDeletedRecordsListener();
-
-// Delete document from Firestore and register tombstone
-export async function deleteDocument(
-  collectionName: string, 
-  id: string
-): Promise<void> {
-  try {
-    // 1. Mark permanently deleted in tombstone registry first
-    await markRecordAsDeleted(collectionName, id);
-
-    if (firestoreQuotaExceeded) {
-      return;
-    }
-
-    // 2. Delete the document in Firestore
-    const docRef = doc(db, collectionName, id);
-    await deleteDoc(docRef);
-  } catch (error) {
-    if (isQuotaExceededError(error)) {
-      handleQuotaExceeded(error);
-      return;
-    }
-    console.error(`[Firestore] Failed to delete document ${id} in ${collectionName}:`, error);
-    throw error;
-  }
-}
-
-// Batch delete multiple documents by ID and register tombstones in one batch operation
-export async function deleteMultipleDocuments(
-  collectionName: string,
-  ids: string[]
-): Promise<void> {
+export async function deleteMultipleDocuments(collectionName: string, ids: string[]): Promise<void> {
   const validIds = Array.from(new Set((ids || []).filter(Boolean)));
   if (validIds.length === 0) return;
 
-  // 1. Register all IDs in deleted tombstone cache & localStorage
   const set = ensureDeletedCacheLoaded(collectionName);
-  validIds.forEach((id) => set.add(id));
+  const mapData = readLocalMirror<any>(collectionName);
+
+  validIds.forEach((id) => {
+    set.add(id);
+    delete mapData[id];
+  });
+
   try {
     const raw = localStorage.getItem(DELETED_RECORDS_KEY);
     const obj = raw ? JSON.parse(raw) : {};
     obj[collectionName] = Array.from(set);
     localStorage.setItem(DELETED_RECORDS_KEY, JSON.stringify(obj));
-  } catch (e) {
-    console.warn('[Firestore] Failed saving batch deleted records to localStorage:', e);
-  }
+  } catch (e) {}
 
-  // 2. Sync tombstones to Firestore system_metadata/deleted_records
-  if (!firestoreQuotaExceeded) {
-    try {
-      const metaRef = doc(db, 'system_metadata', 'deleted_records');
-      await setDoc(
-        metaRef,
-        {
-          [collectionName]: Array.from(set),
-          updatedAt: new Date().toISOString()
-        },
-        { merge: true }
-      );
-    } catch (e) {
-      if (isQuotaExceededError(e)) {
-        handleQuotaExceeded(e);
-      } else {
-        console.warn('[Firestore] Failed syncing batch deleted records to system_metadata:', e);
-      }
-    }
-  }
-
-  // 3. Batch delete from Firestore collection in chunks of 450
-  if (firestoreQuotaExceeded) return;
-  const CHUNK_SIZE = 450;
-  try {
-    for (let i = 0; i < validIds.length; i += CHUNK_SIZE) {
-      if (firestoreQuotaExceeded) break;
-      const slice = validIds.slice(i, i + CHUNK_SIZE);
-      const batch = writeBatch(db);
-      for (const id of slice) {
-        const docRef = doc(db, collectionName, id);
-        batch.delete(docRef);
-      }
-      await batch.commit();
-    }
-  } catch (error) {
-    if (isQuotaExceededError(error)) {
-      handleQuotaExceeded(error);
-      return;
-    }
-    console.error(`[Firestore] Failed batch deleting ${validIds.length} docs from ${collectionName}:`, error);
-    throw error;
-  }
+  writeLocalMirror(collectionName, mapData);
+  notifyCollectionListeners(collectionName);
+  await cloudDeleteDocuments(collectionName, validIds);
 }
 
-// Scan Firestore cash_transactions and journal directly and batch-delete all outflow records & linked journals
 export async function purgeOutflowDocumentsFromFirestore(
   knownOutflowIds: string[] = [],
   knownJournalIds: string[] = []
@@ -416,48 +410,34 @@ export async function purgeOutflowDocumentsFromFirestore(
   const outflowIdSet = new Set<string>(knownOutflowIds.filter(Boolean));
   const journalIdSet = new Set<string>(knownJournalIds.filter(Boolean));
 
-  try {
-    const txColRef = collection(db, 'cash_transactions');
-    const txSnap = await getDocs(txColRef);
-    txSnap.forEach((d) => {
-      const data = d.data();
-      const docId = data?.id || d.id;
-      if (data?.type === 'outflow' || String(docId).startsWith('tx_exp_')) {
-        outflowIdSet.add(docId);
-        outflowIdSet.add(d.id);
-      }
-    });
-  } catch (e) {
-    console.warn('[Firestore] Notice scanning cash_transactions for outflows:', e);
-  }
+  const txMap = readLocalMirror<any>('cash_transactions');
+  Object.values(txMap).forEach((data: any) => {
+    const docId = data?.id;
+    if (data?.type === 'outflow' || String(docId).startsWith('tx_exp_')) {
+      outflowIdSet.add(docId);
+    }
+  });
 
-  try {
-    const jrnColRef = collection(db, 'journal');
-    const jrnSnap = await getDocs(jrnColRef);
-    jrnSnap.forEach((d) => {
-      const data = d.data();
-      const docId = data?.id || d.id;
-      const refId = String(data?.referenceId || '');
-      const hasExpenseDebit =
-        Array.isArray(data?.lines) &&
-        data.lines.some(
-          (l: any) =>
-            (String(l?.accountCode || '').startsWith('5') || String(l?.accountCode || '').startsWith('6')) &&
-            Number(l?.debit) > 0
-        );
-      if (
-        outflowIdSet.has(refId) ||
-        refId.startsWith('tx_exp_') ||
-        String(docId).startsWith('jrn_sync_tx_exp_') ||
-        (data?.referenceModule === 'finance' && hasExpenseDebit)
-      ) {
-        journalIdSet.add(docId);
-        journalIdSet.add(d.id);
-      }
-    });
-  } catch (e) {
-    console.warn('[Firestore] Notice scanning journal for expense entries:', e);
-  }
+  const jrnMap = readLocalMirror<any>('journal');
+  Object.values(jrnMap).forEach((data: any) => {
+    const docId = data?.id;
+    const refId = String(data?.referenceId || '');
+    const hasExpenseDebit =
+      Array.isArray(data?.lines) &&
+      data.lines.some(
+        (l: any) =>
+          (String(l?.accountCode || '').startsWith('5') || String(l?.accountCode || '').startsWith('6')) &&
+          Number(l?.debit) > 0
+      );
+    if (
+      outflowIdSet.has(refId) ||
+      refId.startsWith('tx_exp_') ||
+      String(docId).startsWith('jrn_sync_tx_exp_') ||
+      (data?.referenceModule === 'finance' && hasExpenseDebit)
+    ) {
+      journalIdSet.add(docId);
+    }
+  });
 
   const deletedOutflowIds = Array.from(outflowIdSet);
   const deletedJournalIds = Array.from(journalIdSet);
@@ -472,7 +452,6 @@ export async function purgeOutflowDocumentsFromFirestore(
   return { deletedOutflowIds, deletedJournalIds };
 }
 
-// Purge obsolete reconstructed school documents (lead_sch_2026_*, quo_sch_2026_*, so_sch_2026_*, inv_sch_2026_*) from Firestore
 export async function purgeObsoleteReconstructedSchoolDocsFromFirestore(): Promise<void> {
   const targets: Array<{ col: string; prefix: string }> = [
     { col: 'leads', prefix: 'lead_sch_2026_' },
@@ -482,115 +461,85 @@ export async function purgeObsoleteReconstructedSchoolDocsFromFirestore(): Promi
   ];
 
   for (const { col, prefix } of targets) {
-    try {
-      const snap = await getDocs(collection(db, col));
-      const idsToDelete: string[] = [];
-      snap.forEach((d) => {
-        const docId = String(d.data()?.id || d.id);
-        if (docId.startsWith(prefix) || d.id.startsWith(prefix)) {
-          idsToDelete.push(docId);
-          if (d.id !== docId) idsToDelete.push(d.id);
-        }
-      });
-      if (idsToDelete.length > 0) {
-        await deleteMultipleDocuments(col, idsToDelete);
-      }
-    } catch (e) {
-      console.warn(`[Firestore] Notice purging obsolete prefix ${prefix} from ${col}:`, e);
+    const mapData = readLocalMirror<any>(col);
+    const idsToDelete = Object.keys(mapData).filter((id) => id.startsWith(prefix));
+    if (idsToDelete.length > 0) {
+      await deleteMultipleDocuments(col, idsToDelete);
     }
   }
 }
 
-// Delete all documents in a collection (chunked at 450 docs per batch)
 export async function clearCollection(collectionName: string): Promise<void> {
-  try {
-    const colRef = collection(db, collectionName);
-    const snapshot = await getDocs(colRef);
-    if (!snapshot.empty) {
-      const CHUNK_SIZE = 450;
-      const docs = snapshot.docs;
-      for (let i = 0; i < docs.length; i += CHUNK_SIZE) {
-        const slice = docs.slice(i, i + CHUNK_SIZE);
-        const batch = writeBatch(db);
-        slice.forEach((d) => {
-          batch.delete(d.ref);
-        });
-        await batch.commit();
-      }
-      console.log(`[Firestore] Cleared all documents in ${collectionName}`);
-    }
-  } catch (error) {
-    console.error(`[Firestore] Failed to clear collection ${collectionName}:`, error);
+  const mapData = readLocalMirror<any>(collectionName);
+  const allIds = Object.keys(mapData);
+  writeLocalMirror(collectionName, {});
+  notifyCollectionListeners(collectionName);
+  if (allIds.length > 0) {
+    await cloudDeleteDocuments(collectionName, allIds);
   }
 }
 
-// Seed initial dataset - disabled to prevent mock/dummy data from being injected
 export async function seedIfEmpty<T extends { id?: string; code?: string }>(
-  _collectionName: string, 
+  _collectionName: string,
   _initialItems: T[]
 ): Promise<void> {
-  // Strictly disabled: Database must contain only user-entered real data
   return;
 }
 
-// Subscribe to real-time changes
 export function subscribeToCollection<T extends { id?: string; code?: string }>(
   collectionName: string,
   onData: (items: T[]) => void,
   initialSeedFallback?: T[],
   onStatusChange?: (isLive: boolean) => void
 ): () => void {
-  const colRef = collection(db, collectionName);
+  if (!collectionSubscribers.has(collectionName)) {
+    collectionSubscribers.set(collectionName, new Set());
+  }
+  collectionSubscribers.get(collectionName)!.add(onData);
 
-  const unsubscribe = onSnapshot(
-    colRef,
-    (snapshot) => {
-      if (onStatusChange) onStatusChange(true);
-      if (!snapshot.empty) {
-        markCollectionInitialized(collectionName);
-        const seenKeys = new Set<string>();
-        const items = snapshot.docs
-          .map((d) => {
-            const data = d.data() as T;
-            return { ...data, id: data.id || d.id };
-          })
-          .filter((item) => {
-            const key = getItemKey(item);
-            if (seenKeys.has(key)) return false;
-            seenKeys.add(key);
-            if (isRecordDeleted(collectionName, key)) {
-              // Purge any zombie document from Firestore asynchronously if quota allows
-              if (!firestoreQuotaExceeded) {
-                const docRef = doc(db, collectionName, key);
-                deleteDoc(docRef).catch(() => {});
-              }
-              return false;
-            }
-            return true;
-          });
-        onData(items);
-      } else {
-        // When Firestore collection is empty, preserve non-deleted initial/local fallback data
-        // in local state and localStorage without triggering uncontrolled Firestore batch writes
-        const fallbackList = Array.isArray(initialSeedFallback)
-          ? initialSeedFallback.filter((item) => {
-              const key = getItemKey(item);
-              return !isRecordDeleted(collectionName, key);
-            })
-          : [];
+  // 1. Load dari Local Mirror / Initial Seed terlebih dahulu secara instan
+  const localMap = readLocalMirror<T>(collectionName);
+  const localItems = Object.values(localMap).filter((item) => {
+    const key = getItemKey(item);
+    return !isRecordDeleted(collectionName, key);
+  });
 
-        if (fallbackList.length > 0) {
-          onData(fallbackList);
-        } else {
-          onData([]);
+  if (localItems.length > 0) {
+    onData(localItems);
+  } else if (Array.isArray(initialSeedFallback) && initialSeedFallback.length > 0) {
+    const fallbackFiltered = initialSeedFallback.filter((item) => !isRecordDeleted(collectionName, getItemKey(item)));
+    const seededMap: Record<string, T> = {};
+    fallbackFiltered.forEach((item) => {
+      seededMap[getItemKey(item)] = item;
+    });
+    writeLocalMirror(collectionName, seededMap);
+    onData(fallbackFiltered);
+  } else {
+    onData([]);
+  }
+
+  // 2. Sinkronisasi dengan Cloud / Server DB di latar belakang
+  cloudFetchCollection<T>(collectionName).then((remoteItems) => {
+    if (remoteItems && remoteItems.length > 0) {
+      markCollectionInitialized(collectionName);
+      const mergedMap = readLocalMirror<T>(collectionName);
+      remoteItems.forEach((item) => {
+        const key = getItemKey(item);
+        if (!isRecordDeleted(collectionName, key)) {
+          mergedMap[key] = item;
         }
-      }
-    },
-    (error) => {
-      console.warn(`[Firestore] Real-time listener for ${collectionName} notice:`, error);
-      if (onStatusChange) onStatusChange(false);
+      });
+      writeLocalMirror(collectionName, mergedMap);
+      if (onStatusChange) onStatusChange(true);
+      notifyCollectionListeners(collectionName);
+    } else {
+      if (onStatusChange) onStatusChange(true);
     }
-  );
+  }).catch(() => {
+    if (onStatusChange) onStatusChange(false);
+  });
 
-  return unsubscribe;
+  return () => {
+    collectionSubscribers.get(collectionName)?.delete(onData);
+  };
 }

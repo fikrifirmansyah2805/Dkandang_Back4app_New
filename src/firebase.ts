@@ -1,78 +1,73 @@
-import { initializeApp, getApps, getApp } from 'firebase/app';
-import { getFirestore } from 'firebase/firestore';
-import { 
-  getAuth, 
-  setPersistence, 
-  browserSessionPersistence, 
-  GoogleAuthProvider, 
-  signInWithPopup, 
-  onAuthStateChanged, 
-  User as FirebaseUser 
-} from 'firebase/auth';
-import firebaseConfig from '../firebase-applet-config.json';
+// src/firebase.ts
+// Rebuilt Universal Auth & Sheets Token Bridge (Zero Firebase Dependency)
 
-const app = !getApps().length ? initializeApp(firebaseConfig) : getApp();
+export interface UniversalAuthUser {
+  uid: string;
+  email: string | null;
+  displayName: string | null;
+}
 
-const DEFAULT_DATABASE_ID = 'ai-studio-enterpriseerpsui-e27ce803-3306-4871-9d24-42d035ed0be3';
-const targetDbId = (firebaseConfig as Record<string, string>).firestoreDatabaseId || DEFAULT_DATABASE_ID;
+export const db = {};
+export const auth = {
+  currentUser: null as UniversalAuthUser | null,
+  signOut: async () => {
+    cachedAccessToken = null;
+    if (typeof sessionStorage !== 'undefined') {
+      sessionStorage.removeItem('dkandang_sheets_oauth_token');
+    }
+  }
+};
 
-export const db = targetDbId 
-  ? getFirestore(app, targetDbId)
-  : getFirestore(app);
-
-// Inisialisasi Firebase Auth dengan Anti Auto-Login (browserSessionPersistence)
-// Memastikan sesi otomatis terhapus saat tab atau window browser ditutup
-export const auth = getAuth(app);
-setPersistence(auth, browserSessionPersistence).catch((err) => {
-  console.warn('[Firebase Auth] Sesi browserSessionPersistence gagal diatur:', err);
-});
-
-// Google Workspace OAuth Scopes (Google Sheets Readonly)
 export const SCOPES = [
   'https://www.googleapis.com/auth/spreadsheets.readonly'
 ];
 
-const googleProvider = new GoogleAuthProvider();
-SCOPES.forEach((scope) => googleProvider.addScope(scope));
-
-let isSigningIn = false;
-let cachedAccessToken: string | null = null;
+let cachedAccessToken: string | null =
+  typeof sessionStorage !== 'undefined'
+    ? sessionStorage.getItem('dkandang_sheets_oauth_token')
+    : null;
 
 export const initSheetsAuth = (
-  onAuthSuccess?: (user: FirebaseUser, token: string) => void,
+  onAuthSuccess?: (user: UniversalAuthUser, token: string) => void,
   onAuthFailure?: () => void
 ) => {
-  return onAuthStateChanged(auth, async (user: FirebaseUser | null) => {
-    if (user) {
-      if (cachedAccessToken) {
-        if (onAuthSuccess) onAuthSuccess(user, cachedAccessToken);
-      } else if (!isSigningIn) {
-        cachedAccessToken = null;
-        if (onAuthFailure) onAuthFailure();
-      }
-    } else {
-      cachedAccessToken = null;
-      if (onAuthFailure) onAuthFailure();
-    }
-  });
+  if (cachedAccessToken) {
+    const mockUser: UniversalAuthUser = {
+      uid: 'sheets_oauth_user',
+      email: 'admin@dkandang.id',
+      displayName: 'D\'Kandang Sheets Sync'
+    };
+    if (onAuthSuccess) onAuthSuccess(mockUser, cachedAccessToken);
+  } else {
+    if (onAuthFailure) onAuthFailure();
+  }
+  return () => {};
 };
 
-export const googleSignInForSheets = async (): Promise<{ user: FirebaseUser; accessToken: string } | null> => {
-  try {
-    isSigningIn = true;
-    const result = await signInWithPopup(auth, googleProvider);
-    const credential = GoogleAuthProvider.credentialFromResult(result);
-    if (!credential?.accessToken) {
-      throw new Error('Gagal mendapatkan access token Google Sheets dari autentikasi Google.');
-    }
-    cachedAccessToken = credential.accessToken;
-    return { user: result.user, accessToken: cachedAccessToken };
-  } catch (error) {
-    console.error('[Google Sheets OAuth] Sign in error:', error);
-    throw error;
-  } finally {
-    isSigningIn = false;
+export const googleSignInForSheets = async (): Promise<{ user: UniversalAuthUser; accessToken: string }> => {
+  const manualToken = typeof window !== 'undefined'
+    ? window.prompt(
+        'Masukkan Google OAuth Access Token (atau kosongkan jika menggunakan mode Public Link / CSV Export):',
+        cachedAccessToken || ''
+      )
+    : '';
+
+  if (!manualToken || !manualToken.trim()) {
+    throw new Error('OAuth dibatalkan. Gunakan opsi Public Link / CSV atau Webhook Google Apps Script.');
   }
+
+  cachedAccessToken = manualToken.trim();
+  if (typeof sessionStorage !== 'undefined') {
+    sessionStorage.setItem('dkandang_sheets_oauth_token', cachedAccessToken);
+  }
+
+  const user: UniversalAuthUser = {
+    uid: 'sheets_oauth_user',
+    email: 'admin@dkandang.id',
+    displayName: 'D\'Kandang Sheets Sync'
+  };
+
+  return { user, accessToken: cachedAccessToken };
 };
 
 export const getSheetsAccessToken = (): string | null => {
@@ -81,8 +76,6 @@ export const getSheetsAccessToken = (): string | null => {
 
 export const logoutGoogleSheets = async (): Promise<void> => {
   await auth.signOut();
-  cachedAccessToken = null;
 };
 
-export default app;
-
+export default {};
