@@ -1,0 +1,84 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Immutable Audit Trail - can be read and appended, but never modified or deleted
+    match /audit_logs/{logId} {
+      allow read: if true;
+      allow create: if request.resource.data.keys().hasAll(['id', 'timestamp', 'action', 'module', 'details']);
+      allow update, delete: if false;
+    }
+
+    // Core ERP Data Collections
+    match /bank_accounts/{docId} {
+      allow read, write: if true;
+    }
+    match /cash_transactions/{docId} {
+      allow read, write: if true;
+    }
+    match /budgets/{docId} {
+      allow read, write: if true;
+    }
+    match /coa/{docId} {
+      allow read, write: if true;
+    }
+    match /journal/{docId} {
+      allow read, write: if true;
+    }
+    match /marketing/{docId} {
+      allow read, write: if true;
+    }
+    match /leads/{docId} {
+      allow read, write: if true;
+    }
+    match /quotations/{docId} {
+      allow read, write: if true;
+    }
+    match /sales_orders/{docId} {
+      allow read, write: if true;
+    }
+    match /sales_invoices/{docId} {
+      allow read, write: if true;
+    }
+    match /vendors/{docId} {
+      allow read, write: if true;
+    }
+    match /purchase_requisitions/{docId} {
+      allow read, write: if true;
+    }
+    match /purchase_orders/{docId} {
+      allow read, write: if true;
+    }
+    match /inventory/{docId} {
+      allow read, write: if true;
+    }
+    match /stock_movements/{docId} {
+      allow read, write: if true;
+    }
+    match /stock_opnames/{docId} {
+      allow read, write: if true;
+    }
+    match /reports/{docId} {
+      allow read, write: if true;
+    }
+    match /company_profile/{docId} {
+      allow read, write: if true;
+    }
+    match /accounting_periods/{docId} {
+      allow read, write: if true;
+    }
+    match /notifications/{docId} {
+      allow read, write: if true;
+    }
+    match /sheets_sync_configs/{docId} {
+      allow read, write: if true;
+    }
+    match /document_counters/{docId} {
+      allow read, write: if true;
+    }
+
+    // Default fallback
+    match /{document=**} {
+      allow read, write: if true;
+    }
+  }
+}

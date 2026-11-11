@@ -1,0 +1,169 @@
+@import "tailwindcss";
+
+@layer base {
+  body {
+    background-color: #f6f8f7;
+    color: #1e293b;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  /* Custom Eye-safe Soft Scrollbars */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: #f1f5f9;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: #cbd5e1;
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: #94a3b8;
+  }
+}
+
+/* GLOBAL PRINT & PDF OPTIMIZATION */
+#dkandang-inpage-print-container {
+  display: none;
+}
+
+@media print {
+  @page {
+    size: auto;
+    margin: 8mm 10mm 10mm 10mm;
+  }
+
+  html, body {
+    background-color: #ffffff !important;
+    color: #0f172a !important;
+    height: auto !important;
+    min-height: 100% !important;
+    overflow: visible !important;
+    font-size: 10.5pt !important;
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+    margin: 0 !important;
+    padding: 0 !important;
+  }
+
+  /* Universal print container for 100% reliable printing without popup/iframe blockers */
+  body.dkandang-printing-report > *:not(#dkandang-inpage-print-container) {
+    display: none !important;
+  }
+
+  body.dkandang-printing-report #dkandang-inpage-print-container {
+    display: block !important;
+    position: static !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    margin: 0 !important;
+    padding: 0 !important;
+    background: #ffffff !important;
+    color: #0f172a !important;
+    overflow: visible !important;
+    height: auto !important;
+    min-height: auto !important;
+    max-height: none !important;
+  }
+
+  body.dkandang-printing-report #dkandang-inpage-print-container * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+    color-adjust: exact !important;
+  }
+
+  body.dkandang-printing-report #dkandang-inpage-print-container button,
+  body.dkandang-printing-report #dkandang-inpage-print-container .no-print,
+  body.dkandang-printing-report #dkandang-inpage-print-container .no-print-toolbar {
+    display: none !important;
+  }
+
+  /* Hide app shells, sidebars, headers, action toolbars and backdrops */
+  nav, 
+  aside, 
+  header:not(.print-header), 
+  footer:not(.print-footer), 
+  .no-print, 
+  .no-print-toolbar,
+  .print\:hidden,
+  button:not(.print-visible) {
+    display: none !important;
+  }
+
+  /* Fallback when printing directly from open modal */
+  body:has(#official-sales-billing-report) main > *:not(:has(#official-sales-billing-report)),
+  body:has([id^="printable-"]) main > *:not(:has([id^="printable-"])),
+  body:has(.printable-modal-overlay) main > *:not(:has(.printable-modal-overlay)) {
+    display: none !important;
+  }
+
+  /* Reset fixed modal overlays so only printable content prints */
+  .fixed.inset-0,
+  .printable-modal-overlay,
+  .fixed.inset-0:has(#official-sales-billing-report) {
+    position: static !important;
+    background: transparent !important;
+    backdrop-filter: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    overflow: visible !important;
+    box-shadow: none !important;
+  }
+
+  .printable-modal-card,
+  .fixed.inset-0:has(#official-sales-billing-report) > div {
+    max-height: none !important;
+    height: auto !important;
+    overflow: visible !important;
+    border: none !important;
+    box-shadow: none !important;
+    border-radius: 0 !important;
+    width: 100% !important;
+    max-width: 100% !important;
+    padding: 0 !important;
+    margin: 0 !important;
+  }
+
+  #official-sales-billing-report {
+    overflow: visible !important;
+    max-height: none !important;
+    height: auto !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    background: #ffffff !important;
+    display: block !important;
+    width: 100% !important;
+    max-width: 100% !important;
+  }
+
+  /* Ensure printable paper card stretches nicely without shadow/borders */
+  .printable-document,
+  .print-container {
+    max-width: 100% !important;
+    width: 100% !important;
+    box-shadow: none !important;
+    border: none !important;
+    padding: 0 !important;
+    margin: 0 !important;
+    border-radius: 0 !important;
+    page-break-after: auto;
+  }
+
+  /* Prevent awkward table row splitting and prevent tfoot repetition across pages */
+  tr, .avoid-page-break, .avoid-break {
+    page-break-inside: avoid !important;
+    break-inside: avoid !important;
+  }
+
+  tfoot {
+    display: table-row-group !important;
+  }
+
+  /* Ensure text contrast on print */
+  .text-slate-400, .text-slate-500 {
+    color: #475569 !important;
+  }
+}

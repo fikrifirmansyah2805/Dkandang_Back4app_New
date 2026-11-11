@@ -1,0 +1,6 @@
+{
+  "summary":  "Rencana implementasi pemeliharaan menyeluruh (full maintenance), pengayaan Bagan Akun (COA), integrasi pemilihan Kategori Aktivitas Keuangan (PSAK 2) dengan filter & saran otomatis Akun Lawan COA, serta sinkronisasi Laporan Keuangan (Laba Rugi, Neraca, Arus Kas PSAK 2, dan filter periode) dengan Cloud Firestore.",
+  "updatedAt":  "2026-11-09T06:27:44.424960218Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

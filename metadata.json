@@ -1,0 +1,6 @@
+{
+  "name": "D'Kandang Amazing Farm ERP",
+  "description": "Sistem Enterprise Resource Planning (ERP) terpadu D'Kandang Amazing Farm Depok mengelola Agrowisata Edukasi, Peternakan & Kebun, Tiketing, F&B Resto, Penjualan Produk Olahan Susu, Pengadaan Pakan, Akuntansi PSAK Agrikultur, Otomasi Notifikasi Approval, dan Gudang Logistik.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

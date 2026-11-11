@@ -1,0 +1,239 @@
+{
+  "entities": {
+    "users": {
+      "description": "User profiles and credentials for D'Kandang ERP staff and executives",
+      "fields": {
+        "id": { "type": "string", "description": "Unique user ID" },
+        "name": { "type": "string", "description": "Full name" },
+        "username": { "type": "string", "description": "Login username" },
+        "email": { "type": "string", "description": "Email address" },
+        "role": { "type": "string", "description": "User role key" },
+        "department": { "type": "string", "description": "Department name" },
+        "avatar": { "type": "string", "description": "Avatar URL or initials" },
+        "lastLogin": { "type": "string", "description": "ISO timestamp of last login" }
+      }
+    },
+    "bank_accounts": {
+      "description": "Corporate bank and cash register accounts",
+      "fields": {
+        "id": { "type": "string", "description": "Bank account ID" },
+        "bankName": { "type": "string", "description": "Bank name" },
+        "accountNumber": { "type": "string", "description": "Account number" },
+        "accountHolder": { "type": "string", "description": "Account holder name" },
+        "accountType": { "type": "string", "description": "Type of account (operational/investment/petty_cash)" },
+        "balance": { "type": "number", "description": "Current balance in IDR" }
+      }
+    },
+    "cash_transactions": {
+      "description": "Cash inflow and outflow transaction records",
+      "fields": {
+        "id": { "type": "string", "description": "Unique transaction ID" },
+        "date": { "type": "string", "description": "Transaction date YYYY-MM-DD" },
+        "type": { "type": "string", "description": "inflow or outflow" },
+        "category": { "type": "string", "description": "Operating / investing / financing" },
+        "description": { "type": "string", "description": "Description of cash flow" },
+        "amount": { "type": "number", "description": "Amount in IDR" },
+        "sourceAccount": { "type": "string", "description": "Target bank or cash account" },
+        "status": { "type": "string", "description": "Transaction status" }
+      }
+    },
+    "leads": {
+      "description": "CRM leads and educational tour prospects",
+      "fields": {
+        "id": { "type": "string", "description": "Lead ID" },
+        "name": { "type": "string", "description": "Contact person name" },
+        "company": { "type": "string", "description": "School / Organization / Agency name" },
+        "email": { "type": "string", "description": "Email address" },
+        "phone": { "type": "string", "description": "WhatsApp / Phone number" },
+        "stage": { "type": "string", "description": "CRM pipeline stage" },
+        "dealValue": { "type": "number", "description": "Estimated deal value in IDR" },
+        "paymentStatus": { "type": "string", "description": "unpaid / dp_paid / paid" }
+      }
+    },
+    "quotations": {
+      "description": "Sales Quotations / Surat Penawaran Harga for field trips and packages",
+      "fields": {
+        "id": { "type": "string", "description": "Quotation ID" },
+        "quotationNumber": { "type": "string", "description": "Formatted quotation number" },
+        "customerName": { "type": "string", "description": "Customer contact person" },
+        "companyName": { "type": "string", "description": "School / Institution name" },
+        "grandTotal": { "type": "number", "description": "Grand total in IDR" },
+        "status": { "type": "string", "description": "pending_approval / approved / sent / rejected / converted" }
+      }
+    },
+    "sales_orders": {
+      "description": "Confirmed sales orders and execution schedules",
+      "fields": {
+        "id": { "type": "string", "description": "Sales order ID" },
+        "soNumber": { "type": "string", "description": "Sales order number" },
+        "customerName": { "type": "string", "description": "Customer name" },
+        "totalAmount": { "type": "number", "description": "Total order amount in IDR" },
+        "status": { "type": "string", "description": "processing / delivered / cancelled" },
+        "paymentStatus": { "type": "string", "description": "unpaid / partial / paid" }
+      }
+    },
+    "sales_invoices": {
+      "description": "Billing invoices issued to customers",
+      "fields": {
+        "id": { "type": "string", "description": "Invoice ID" },
+        "invoiceNumber": { "type": "string", "description": "Invoice number" },
+        "customerName": { "type": "string", "description": "Customer name" },
+        "totalAmount": { "type": "number", "description": "Invoice total amount" },
+        "paidAmount": { "type": "number", "description": "Amount received" },
+        "status": { "type": "string", "description": "issued / paid / overdue" }
+      }
+    },
+    "inventory": {
+      "description": "Warehouse inventory and farm supply catalog",
+      "fields": {
+        "id": { "type": "string", "description": "Inventory ID" },
+        "sku": { "type": "string", "description": "Stock keeping unit" },
+        "name": { "type": "string", "description": "Item name" },
+        "category": { "type": "string", "description": "Category" },
+        "stockQty": { "type": "number", "description": "Current quantity in stock" },
+        "unit": { "type": "string", "description": "Unit of measurement" },
+        "unitCost": { "type": "number", "description": "Unit cost price" }
+      }
+    },
+    "stock_movements": {
+      "description": "Warehouse stock in/out/adjustment logs",
+      "fields": {
+        "id": { "type": "string", "description": "Movement log ID" },
+        "date": { "type": "string", "description": "Movement timestamp" },
+        "type": { "type": "string", "description": "inbound / outbound / transfer / adjustment" },
+        "itemSku": { "type": "string", "description": "Item SKU" },
+        "quantity": { "type": "number", "description": "Quantity moved" }
+      }
+    },
+    "purchase_requisitions": {
+      "description": "Purchase requisitions submitted by departments",
+      "fields": {
+        "id": { "type": "string", "description": "PR ID" },
+        "prNumber": { "type": "string", "description": "PR Number" },
+        "requester": { "type": "string", "description": "Requester name" },
+        "department": { "type": "string", "description": "Department" },
+        "status": { "type": "string", "description": "pending / approved / converted_to_po / rejected" }
+      }
+    },
+    "purchase_orders": {
+      "description": "Purchase orders issued to suppliers",
+      "fields": {
+        "id": { "type": "string", "description": "PO ID" },
+        "poNumber": { "type": "string", "description": "PO Number" },
+        "vendorName": { "type": "string", "description": "Vendor name" },
+        "totalCost": { "type": "number", "description": "Total purchase cost" },
+        "status": { "type": "string", "description": "issued / goods_received / completed" }
+      }
+    },
+    "company_profile": {
+      "description": "Corporate profile and legal letterhead data for D'Kandang Amazing Farm",
+      "fields": {
+        "id": { "type": "string", "description": "Document ID" },
+        "name": { "type": "string", "description": "Brand name" },
+        "ptName": { "type": "string", "description": "Legal company name" },
+        "address": { "type": "string", "description": "Office and farm address" },
+        "phone": { "type": "string", "description": "Phone contact" },
+        "email": { "type": "string", "description": "Contact email" }
+      }
+    },
+    "notifications": {
+      "description": "Automated workflow notifications and director approval alerts",
+      "fields": {
+        "id": { "type": "string", "description": "Notification ID" },
+        "title": { "type": "string", "description": "Alert title" },
+        "message": { "type": "string", "description": "Alert message body" },
+        "type": { "type": "string", "description": "Type of notification" },
+        "read": { "type": "boolean", "description": "Read status" }
+      }
+    },
+    "audit_logs": {
+      "description": "Immutable enterprise audit trail logs with SHA-256 cryptographic hashes for all system mutations and financial transactions",
+      "fields": {
+        "id": { "type": "string", "description": "Unique audit log ID" },
+        "timestamp": { "type": "string", "description": "ISO timestamp of transaction/action" },
+        "userId": { "type": "string", "description": "Actor user ID" },
+        "userName": { "type": "string", "description": "Actor user full name" },
+        "userRole": { "type": "string", "description": "Actor role key" },
+        "action": { "type": "string", "description": "Action type identifier" },
+        "module": { "type": "string", "description": "Target ERP module" },
+        "details": { "type": "string", "description": "Detailed log description" },
+        "ipAddress": { "type": "string", "description": "Client IP address" },
+        "integrityHash": { "type": "string", "description": "SHA-256 integrity hash verification signature" },
+        "isEncrypted": { "type": "boolean", "description": "Flag for encryption/immutable signature status" }
+      }
+    },
+    "budgets": {
+      "description": "Departmental operational budget allocations",
+      "fields": {
+        "id": { "type": "string", "description": "Budget allocation ID" },
+        "department": { "type": "string", "description": "Department name" },
+        "category": { "type": "string", "description": "Expense category" },
+        "allocatedAmount": { "type": "number", "description": "Allocated ceiling amount in IDR" },
+        "spentAmount": { "type": "number", "description": "Realized spent amount in IDR" },
+        "period": { "type": "string", "description": "Budget period" }
+      }
+    },
+    "coa": {
+      "description": "Chart of Accounts master financial ledger",
+      "fields": {
+        "code": { "type": "string", "description": "Account code" },
+        "name": { "type": "string", "description": "Account name" },
+        "category": { "type": "string", "description": "Account category" },
+        "normalBalance": { "type": "string", "description": "Debit or Credit" },
+        "balance": { "type": "number", "description": "Current balance in IDR" }
+      }
+    },
+    "journal": {
+      "description": "General journal vouchers and double-entry accounting records",
+      "fields": {
+        "id": { "type": "string", "description": "Journal entry ID" },
+        "entryNumber": { "type": "string", "description": "Voucher number" },
+        "date": { "type": "string", "description": "Voucher date" },
+        "description": { "type": "string", "description": "Description of journal voucher" },
+        "totalAmount": { "type": "number", "description": "Total voucher debit/credit" },
+        "status": { "type": "string", "description": "posted / draft" }
+      }
+    },
+    "marketing": {
+      "description": "Marketing campaigns and promotional ROI tracking",
+      "fields": {
+        "id": { "type": "string", "description": "Campaign ID" },
+        "name": { "type": "string", "description": "Campaign name" },
+        "channel": { "type": "string", "description": "Marketing channel" },
+        "budget": { "type": "number", "description": "Campaign budget" },
+        "status": { "type": "string", "description": "active / completed / planned" }
+      }
+    },
+    "vendors": {
+      "description": "Approved supplier directory and procurement partners",
+      "fields": {
+        "id": { "type": "string", "description": "Vendor ID" },
+        "code": { "type": "string", "description": "Vendor Code" },
+        "name": { "type": "string", "description": "Vendor Name" },
+        "category": { "type": "string", "description": "Category" },
+        "status": { "type": "string", "description": "active / suspended / blacklisted" }
+      }
+    },
+    "stock_opnames": {
+      "description": "Periodic warehouse stock physical count audit records",
+      "fields": {
+        "id": { "type": "string", "description": "Opname ID" },
+        "opnameNumber": { "type": "string", "description": "Opname voucher number" },
+        "date": { "type": "string", "description": "Audit date" },
+        "warehouse": { "type": "string", "description": "Warehouse location" },
+        "auditor": { "type": "string", "description": "Auditor staff name" },
+        "status": { "type": "string", "description": "completed / in_progress / pending_approval" }
+      }
+    },
+    "reports": {
+      "description": "Automated schedule configurations for executive financial and operational reports",
+      "fields": {
+        "id": { "type": "string", "description": "Report schedule ID" },
+        "title": { "type": "string", "description": "Report title" },
+        "module": { "type": "string", "description": "Module type" },
+        "frequency": { "type": "string", "description": "Generation frequency" },
+        "status": { "type": "string", "description": "active / paused" }
+      }
+    }
+  }
+}
